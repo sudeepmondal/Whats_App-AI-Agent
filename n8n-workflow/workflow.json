@@ -1,0 +1,255 @@
+{
+  "name": "WhatsApp AI Auto-Reply Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - Receive WhatsApp Msg",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "whatsapp-webhook-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════════\n// STEP 1: Message থেকে সব দরকারি তথ্য বের করো\n// ══════════════════════════════════════════════\n\nconst body = $input.first().json.body || $input.first().json;\n\nconst msgId          = body.msgId || '';\nconst jid            = body.jid || '';\nconst isGroup        = body.isGroup || false;\nconst senderNumber   = body.senderNumber || '';\nconst senderName     = body.senderName || 'User';\nconst messageContent = body.messageContent || '';\nconst myName         = body.myName || '';\nconst myPhone        = body.myPhone || '';\nconst timestamp      = body.timestamp || Date.now();\n\n// ── Sleep Mode Check ──────────────────────────────────────────\n// রাত 11টা থেকে সকাল 7টা পর্যন্ত reply বন্ধ\nconst hour = new Date().getHours();\nconst SLEEP_START = 23;\nconst SLEEP_END   = 7;\nconst isSleepTime = hour >= SLEEP_START || hour < SLEEP_END;\n\n// ── Blacklist Check ───────────────────────────────────────────\n// এই নম্বরগুলোকে কখনো reply দেওয়া হবে না\nconst BLACKLIST = [];\n// উদাহরণ: const BLACKLIST = ['8801XXXXXXXXX', '8801YYYYYYYYY'];\nconst isBlacklisted = BLACKLIST.includes(senderNumber);\n\n// ── Spam Check ────────────────────────────────────────────────\nconst SPAM_KEYWORDS = ['win prize', 'click here', 'free money', 'lottery', 'http://', 'https://bit.ly'];\nconst messageLC = messageContent.toLowerCase();\nconst isSpam = SPAM_KEYWORDS.some(kw => messageLC.includes(kw));\n\n// ── Group Mention Check ───────────────────────────────────────\n// Group এ reply শুধু যদি আমার নাম mention করা হয়\nconst myNameMentioned = myName ? messageLC.includes(myName.toLowerCase()) : false;\n\n// ── Should Reply? ─────────────────────────────────────────────\nlet shouldReply = false;\nlet skipReason  = '';\n\nif (isSleepTime) {\n  shouldReply = false;\n  skipReason  = 'sleep_mode';\n} else if (isBlacklisted) {\n  shouldReply = false;\n  skipReason  = 'blacklisted';\n} else if (isSpam) {\n  shouldReply = false;\n  skipReason  = 'spam';\n} else if (senderNumber === myPhone) {\n  shouldReply = false;\n  skipReason  = 'own_message';\n} else if (isGroup && !myNameMentioned) {\n  shouldReply = false;\n  skipReason  = 'group_not_mentioned';\n} else {\n  shouldReply = true;\n}\n\n// ── Personality Prompt ────────────────────────────────────────\n// চাইলে এখানে তোমার নিজের personality যোগ করো\nconst SYSTEM_PROMPTS = {\n  friendly:     'তুমি একজন বন্ধুত্বপূর্ণ মানুষ। সংক্ষিপ্ত এবং স্বাভাবিকভাবে reply করো। বাংলা বা ইংরেজিতে যে ভাষায় message এসেছে সেই ভাষায় reply করো।',\n  professional: 'Reply professionally and concisely. Keep it short and to the point.',\n  funny:        'Reply in a funny, witty way. Use humor naturally but keep it short.',\n  casual:       'Reply casually like a friend. Use informal language. Keep it brief.',\n};\n\nconst PERSONALITY = 'friendly'; // .env থেকে নেওয়া যায়\nconst systemPrompt = SYSTEM_PROMPTS[PERSONALITY] || SYSTEM_PROMPTS.friendly;\n\nconsole.log(`[n8n] Message from: ${senderName} | Group: ${isGroup} | Reply: ${shouldReply} | Reason: ${skipReason}`);\n\nreturn [{\n  json: {\n    msgId,\n    jid,\n    isGroup,\n    senderNumber,\n    senderName,\n    messageContent,\n    myName,\n    shouldReply,\n    skipReason,\n    systemPrompt,\n    timestamp,\n  }\n}];"
+      },
+      "id": "node-preprocess",
+      "name": "Function - Preprocess & Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-should-reply",
+              "leftValue": "={{ $json.shouldReply }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-reply",
+      "name": "IF - Should Reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'skipped', reason: $json.skipReason }) }}",
+        "options": {}
+      },
+      "id": "node-skip-response",
+      "name": "Respond - Skip (no reply needed)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [680, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"model\": \"llama3-70b-8192\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{ $json.systemPrompt }}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.messageContent }}\"\n    }\n  ],\n  \"max_tokens\": 300,\n  \"temperature\": 0.8\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-groq-api",
+      "name": "HTTP - Call Groq API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ══════════════════════════════════════════════\n// STEP 2: Groq API response থেকে reply text বের করো\n// ══════════════════════════════════════════════\n\nconst groqResponse = $input.first().json;\nconst prevData     = $('Function - Preprocess & Filter').first().json;\n\n// Groq API response structure:\n// { choices: [{ message: { content: '...' } }] }\nlet replyText = '';\n\ntry {\n  replyText = groqResponse.choices[0].message.content.trim();\n} catch (e) {\n  replyText = 'একটু পরে reply করছি! 😊';\n  console.error('Groq response parse error:', e);\n}\n\n// Typing delay calculate করো (message length অনুযায়ী)\n// প্রতি character এর জন্য ~50ms — human-like typing simulation\nconst typingDelayMs = Math.min(replyText.length * 50, 4000); // Max 4 seconds\n\nconsole.log(`[n8n] AI Reply (${replyText.length} chars): ${replyText.substring(0, 60)}...`);\nconsole.log(`[n8n] Typing delay: ${typingDelayMs}ms`);\n\nreturn [{\n  json: {\n    jid:          prevData.jid,\n    replyText,\n    typingDelayMs,\n    senderName:   prevData.senderName,\n    isGroup:      prevData.isGroup,\n  }\n}];"
+      },
+      "id": "node-extract-reply",
+      "name": "Function - Extract AI Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.round($json.typingDelayMs / 1000) }}",
+        "unit": "seconds"
+      },
+      "id": "node-wait",
+      "name": "Wait - Human-like Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1340, 300],
+      "webhookId": "wait-webhook-001"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:3001/send-message",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"jid\": \"{{ $json.jid }}\",\n  \"message\": \"{{ $json.replyText }}\",\n  \"delay\": 0\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-send-wa",
+      "name": "HTTP - Send WhatsApp Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'replied', message: $('Function - Extract AI Reply').first().json.replyText }) }}",
+        "options": {}
+      },
+      "id": "node-success-response",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1780, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - Receive WhatsApp Msg": {
+      "main": [
+        [
+          {
+            "node": "Function - Preprocess & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Preprocess & Filter": {
+      "main": [
+        [
+          {
+            "node": "IF - Should Reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Should Reply?": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Call Groq API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Skip (no reply needed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Call Groq API": {
+      "main": [
+        [
+          {
+            "node": "Function - Extract AI Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Extract AI Reply": {
+      "main": [
+        [
+          {
+            "node": "Wait - Human-like Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Human-like Delay": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Send WhatsApp Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "WhatsApp" },
+    { "name": "AI Agent" },
+    { "name": "Groq" }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
